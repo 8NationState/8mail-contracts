@@ -1,0 +1,25 @@
+# AML compiled output
+*.amlc
+*.amlo
+build/
+artifacts/
+dist/
+
+# Deploy receipts (keep in separate private repo)
+deploy-receipts/
+
+# env
+.env
+.env.local
+
+# editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# python tooling
+__pycache__/
+*.pyc
+.venv/
+venv/

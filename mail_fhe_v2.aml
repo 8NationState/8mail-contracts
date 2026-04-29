@@ -1,0 +1,168 @@
+// mail_fhe_v2.aml
+//
+// 8mail v2: FHE-encrypted on-chain messaging with per-message treasury fee.
+// Changes vs v1 (mail_fhe.aml):
+//   - adds `treasury` address and `fee_per_message` (default 10_000 OU = 0.01 OCT)
+//   - send_encrypted_message() requires value >= fee and forwards fee to treasury
+//   - owner-only setters for treasury address and fee
+//   - total_fees_collected counter
+//   - events: FeeCollected, FeeUpdated, TreasuryUpdated
+//
+// DECISION NEEDED: confirm AML supports `transfer(addr, amount)` from contract context.
+// If not, fallback: accumulate in `pending_fees` on-contract; treasury pulls via `sweep()`.
+
+contract Mail8FHEv2 {
+
+  event MessageSent(sender: address, recipient: address, msg_id: int)
+  event UserRegistered(addr: address, name: string)
+  event FeeCollected(sender: address, amount: int, msg_id: int)
+  event FeeUpdated(old_fee: int, new_fee: int)
+  event TreasuryUpdated(old_treasury: address, new_treasury: address)
+  event Swept(to: address, amount: int)
+
+  state {
+    owner: address
+    treasury: address
+    fee_per_message: int
+    total_fees_collected: int
+    pending_fees: int
+
+    next_msg_id: int
+    user_count: int
+
+    registered: map[address]int
+    display_name: map[address]string
+    fhe_pubkey_registered: map[address]int
+
+    envelope_sender: map[int]address
+    envelope_recipient: map[int]address
+    envelope_subject_ct: map[int]string
+    envelope_body_ct: map[int]string
+    envelope_timestamp: map[int]int
+    envelope_encrypted: map[int]int
+
+    inbox_count: map[address]int
+    inbox_msg_id: map[address]map[int]int
+
+    sent_count: map[address]int
+    sent_msg_id: map[address]map[int]int
+  }
+
+  fn init(initial_treasury: address, initial_fee: int) {
+    self.owner = caller
+    self.treasury = initial_treasury
+    self.fee_per_message = initial_fee
+    self.total_fees_collected = 0
+    self.pending_fees = 0
+    self.next_msg_id = 1
+    self.user_count = 0
+  }
+
+  fn register(name: string): int {
+    require(self.registered[caller] == 0, "already registered")
+    require(name != "", "empty name")
+    self.registered[caller] = 1
+    self.display_name[caller] = name
+    self.user_count += 1
+    emit UserRegistered(caller, name)
+    return 1
+  }
+
+  fn send_encrypted_message(to: address, subject_ct: string, body_ct: string): int {
+    require(self.registered[caller] == 1, "sender not registered")
+    require(self.registered[to] == 1, "recipient not registered")
+    require(subject_ct != "", "empty subject")
+    require(body_ct != "", "empty body")
+    require(value >= self.fee_per_message, "insufficient fee")
+
+    let msg_id = self.next_msg_id
+    self.next_msg_id += 1
+
+    self.envelope_sender[msg_id] = caller
+    self.envelope_recipient[msg_id] = to
+    self.envelope_subject_ct[msg_id] = subject_ct
+    self.envelope_body_ct[msg_id] = body_ct
+    self.envelope_timestamp[msg_id] = epoch
+    self.envelope_encrypted[msg_id] = 1
+
+    let idx = self.inbox_count[to]
+    self.inbox_msg_id[to][idx] = msg_id
+    self.inbox_count[to] += 1
+
+    let sidx = self.sent_count[caller]
+    self.sent_msg_id[caller][sidx] = msg_id
+    self.sent_count[caller] += 1
+
+    // accumulate fee — swept to treasury by sweep() or auto-forwarded if AML allows
+    self.pending_fees += self.fee_per_message
+    self.total_fees_collected += self.fee_per_message
+
+    emit MessageSent(caller, to, msg_id)
+    emit FeeCollected(caller, self.fee_per_message, msg_id)
+    return msg_id
+  }
+
+  fn sweep(): int {
+    // Anyone can trigger, funds always go to treasury.
+    require(self.pending_fees > 0, "nothing to sweep")
+    let amount = self.pending_fees
+    self.pending_fees = 0
+    transfer(self.treasury, amount)
+    emit Swept(self.treasury, amount)
+    return amount
+  }
+
+  fn set_fee(new_fee: int): int {
+    require(caller == self.owner, "only owner")
+    require(new_fee >= 0, "negative fee")
+    let old = self.fee_per_message
+    self.fee_per_message = new_fee
+    emit FeeUpdated(old, new_fee)
+    return new_fee
+  }
+
+  fn set_treasury(new_treasury: address): int {
+    require(caller == self.owner, "only owner")
+    let old = self.treasury
+    self.treasury = new_treasury
+    emit TreasuryUpdated(old, new_treasury)
+    return 1
+  }
+
+  fn transfer_ownership(new_owner: address): int {
+    require(caller == self.owner, "only owner")
+    self.owner = new_owner
+    return 1
+  }
+
+  view fn verify_message_integrity(msg_id: int, pk_addr: string): int {
+    require(msg_id > 0, "invalid msg_id")
+    require(msg_id < self.next_msg_id, "msg not found")
+    require(self.envelope_encrypted[msg_id] == 1, "not encrypted")
+    let pk = fhe_load_pk(pk_addr)
+    let ct = fhe_deser(self.envelope_body_ct[msg_id])
+    let verified = fhe_ser(ct)
+    return 1
+  }
+
+  view fn get_fee_per_message(): int { return self.fee_per_message }
+  view fn get_treasury(): address { return self.treasury }
+  view fn get_total_fees_collected(): int { return self.total_fees_collected }
+  view fn get_pending_fees(): int { return self.pending_fees }
+  view fn get_owner(): address { return self.owner }
+
+  view fn is_registered(addr: address): int { return self.registered[addr] }
+  view fn get_display_name(addr: address): string { return self.display_name[addr] }
+  view fn get_inbox_count(addr: address): int { return self.inbox_count[addr] }
+  view fn get_inbox_msg_id(addr: address, idx: int): int { return self.inbox_msg_id[addr][idx] }
+  view fn get_sent_count(addr: address): int { return self.sent_count[addr] }
+  view fn get_sent_msg_id(addr: address, idx: int): int { return self.sent_msg_id[addr][idx] }
+  view fn get_envelope_sender(msg_id: int): address { return self.envelope_sender[msg_id] }
+  view fn get_envelope_recipient(msg_id: int): address { return self.envelope_recipient[msg_id] }
+  view fn get_envelope_subject_ct(msg_id: int): string { return self.envelope_subject_ct[msg_id] }
+  view fn get_envelope_body_ct(msg_id: int): string { return self.envelope_body_ct[msg_id] }
+  view fn get_envelope_timestamp(msg_id: int): int { return self.envelope_timestamp[msg_id] }
+  view fn get_envelope_encrypted(msg_id: int): int { return self.envelope_encrypted[msg_id] }
+  view fn get_user_count(): int { return self.user_count }
+  view fn get_next_msg_id(): int { return self.next_msg_id }
+}

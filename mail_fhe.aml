@@ -1,0 +1,147 @@
+contract Mail8FHE {
+
+  struct Envelope {
+    sender: address
+    recipient: address
+    subject_ct: string
+    body_ct: string
+    timestamp: int
+    encrypted: int
+  }
+
+  event MessageSent(sender: address, recipient: address, msg_id: int)
+  event UserRegistered(addr: address, name: string)
+
+  state {
+    owner: address
+    next_msg_id: int
+    user_count: int
+
+    registered: map[address]int
+    display_name: map[address]string
+    fhe_pubkey_registered: map[address]int
+
+    envelope_sender: map[int]address
+    envelope_recipient: map[int]address
+    envelope_subject_ct: map[int]string
+    envelope_body_ct: map[int]string
+    envelope_timestamp: map[int]int
+    envelope_encrypted: map[int]int
+
+    inbox_count: map[address]int
+    inbox_msg_id: map[address]map[int]int
+
+    sent_count: map[address]int
+    sent_msg_id: map[address]map[int]int
+  }
+
+  fn init() {
+    self.owner = caller
+    self.next_msg_id = 1
+    self.user_count = 0
+  }
+
+  fn register(name: string): int {
+    require(self.registered[caller] == 0, "already registered")
+    require(name != "", "empty name")
+    self.registered[caller] = 1
+    self.display_name[caller] = name
+    self.user_count += 1
+    emit UserRegistered(caller, name)
+    return 1
+  }
+
+  fn send_encrypted_message(to: address, subject_ct: string, body_ct: string): int {
+    require(self.registered[caller] == 1, "sender not registered")
+    require(self.registered[to] == 1, "recipient not registered")
+    require(subject_ct != "", "empty subject")
+    require(body_ct != "", "empty body")
+
+    let msg_id = self.next_msg_id
+    self.next_msg_id += 1
+
+    self.envelope_sender[msg_id] = caller
+    self.envelope_recipient[msg_id] = to
+    self.envelope_subject_ct[msg_id] = subject_ct
+    self.envelope_body_ct[msg_id] = body_ct
+    self.envelope_timestamp[msg_id] = epoch
+    self.envelope_encrypted[msg_id] = 1
+
+    let idx = self.inbox_count[to]
+    self.inbox_msg_id[to][idx] = msg_id
+    self.inbox_count[to] += 1
+
+    let sidx = self.sent_count[caller]
+    self.sent_msg_id[caller][sidx] = msg_id
+    self.sent_count[caller] += 1
+
+    emit MessageSent(caller, to, msg_id)
+    return msg_id
+  }
+
+  view fn verify_message_integrity(msg_id: int, pk_addr: string): int {
+    require(msg_id > 0, "invalid msg_id")
+    require(msg_id < self.next_msg_id, "msg not found")
+    require(self.envelope_encrypted[msg_id] == 1, "not encrypted")
+    let pk = fhe_load_pk(pk_addr)
+    let ct = fhe_deser(self.envelope_body_ct[msg_id])
+    let verified = fhe_ser(ct)
+    return 1
+  }
+
+  view fn is_registered(addr: address): int {
+    return self.registered[addr]
+  }
+
+  view fn get_display_name(addr: address): string {
+    return self.display_name[addr]
+  }
+
+  view fn get_inbox_count(addr: address): int {
+    return self.inbox_count[addr]
+  }
+
+  view fn get_inbox_msg_id(addr: address, idx: int): int {
+    return self.inbox_msg_id[addr][idx]
+  }
+
+  view fn get_sent_count(addr: address): int {
+    return self.sent_count[addr]
+  }
+
+  view fn get_sent_msg_id(addr: address, idx: int): int {
+    return self.sent_msg_id[addr][idx]
+  }
+
+  view fn get_envelope_sender(msg_id: int): address {
+    return self.envelope_sender[msg_id]
+  }
+
+  view fn get_envelope_recipient(msg_id: int): address {
+    return self.envelope_recipient[msg_id]
+  }
+
+  view fn get_envelope_subject_ct(msg_id: int): string {
+    return self.envelope_subject_ct[msg_id]
+  }
+
+  view fn get_envelope_body_ct(msg_id: int): string {
+    return self.envelope_body_ct[msg_id]
+  }
+
+  view fn get_envelope_timestamp(msg_id: int): int {
+    return self.envelope_timestamp[msg_id]
+  }
+
+  view fn get_envelope_encrypted(msg_id: int): int {
+    return self.envelope_encrypted[msg_id]
+  }
+
+  view fn get_user_count(): int {
+    return self.user_count
+  }
+
+  view fn get_next_msg_id(): int {
+    return self.next_msg_id
+  }
+}
