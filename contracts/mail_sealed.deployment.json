@@ -1,0 +1,39 @@
+{
+  "network": "mainnet",
+  "deployer": "octGFAk1bC6sfAqWpX1DcosauQZ7pLy5zqWvZyrbzs8wbbW",
+  "contract_addr": "octDRHQfDyLaahN8cpuqqJdrHUYDr67PnWETA5iby3gqVZd",
+  "deploy_tx": "1411b7bd2de29a5a63aceba92e6b365b847111db9168fe8f0f4259da2457ea7e",
+  "deploy_tx_status": "confirmed",
+  "deploy_tx_epoch": 756944,
+  "deploy_tx_nonce": 25,
+  "init_args": [
+    "088ccc8a02c85b7fe99af88dcf064d2c0718e5cfff88a00ec71aaf2f10b16e8d",
+    "octGFAk1bC6sfAqWpX1DcosauQZ7pLy5zqWvZyrbzs8wbbW",
+    50000
+  ],
+  "bytecode_sha": "fa2b605fcb329815ee91269eb7acd9684b5a1c598cfbb28f48c3d70d8aebe8c4",
+  "bytecode_size": 4776,
+  "bytecode_b64_len": 6368,
+  "instructions": 801,
+  "aml_version": "1.0 Rehovot",
+  "deploy_ou_spent": 50000000,
+  "timestamp": 1777798171.1856372,
+  "verified_state": {
+    "owner": "octGFAk1bC6sfAqWpX1DcosauQZ7pLy5zqWvZyrbzs8wbbW",
+    "pending_owner": "",
+    "treasury": "octGFAk1bC6sfAqWpX1DcosauQZ7pLy5zqWvZyrbzs8wbbW",
+    "fee_per_send": 50000,
+    "pending_fees": 0,
+    "total_fees_collected": 0,
+    "merkle_root": "088ccc8a02c85b7fe99af88dcf064d2c0718e5cfff88a00ec71aaf2f10b16e8d",
+    "member_count": 0,
+    "next_msg_id": 0
+  },
+  "admin_surface": {
+    "ownership": "two-step (initiate_owner_transfer → accept_ownership, cancel_owner_transfer)",
+    "treasury": "set_treasury(address) — owner-only",
+    "fee": "set_fee(int) — owner-only",
+    "sweep": "sweep() — permissionless, destination bound to self.treasury"
+  },
+  "notes": "Constructor deploy; atomic state init. Replaces abandoned oct8TT96…useP. Two-step ownership transfer prevents typo-induced admin-surface loss. Relayer functionality intentionally excluded — network-layer traceability reduction (Tor/Dandelion++) is a client-side concern, not a contract concern, per wiki/8mail-metadata-privacy-strategy.md §5h."
+}

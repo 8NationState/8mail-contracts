@@ -1,0 +1,373 @@
+{
+  "functions": [
+    {
+      "name": "update_root",
+      "inputs": [
+        "string",
+        "int"
+      ],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "record_leaf",
+      "inputs": [
+        "int",
+        "string"
+      ],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "send_sealed",
+      "inputs": [
+        "string",
+        "string",
+        "int",
+        "int",
+        "string",
+        "string",
+        "string",
+        "string",
+        "int"
+      ],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "initiate_owner_transfer",
+      "inputs": [
+        "address"
+      ],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "accept_ownership",
+      "inputs": [],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "cancel_owner_transfer",
+      "inputs": [],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "set_treasury",
+      "inputs": [
+        "address"
+      ],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "set_fee",
+      "inputs": [
+        "int"
+      ],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "sweep",
+      "inputs": [],
+      "output": "int",
+      "view": false,
+      "payable": false
+    },
+    {
+      "name": "current_root",
+      "inputs": [],
+      "output": "string",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "current_member_count",
+      "inputs": [],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_next_msg_id",
+      "inputs": [],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_owner",
+      "inputs": [],
+      "output": "address",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_pending_owner",
+      "inputs": [],
+      "output": "address",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_treasury",
+      "inputs": [],
+      "output": "address",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_fee_per_send",
+      "inputs": [],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_pending_fees",
+      "inputs": [],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_total_fees_collected",
+      "inputs": [],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "has_nullifier",
+      "inputs": [
+        "string"
+      ],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_leaf",
+      "inputs": [
+        "int"
+      ],
+      "output": "string",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_inbox_count",
+      "inputs": [
+        "string"
+      ],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "get_inbox_msg_id",
+      "inputs": [
+        "string",
+        "int"
+      ],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "fetch_envelope_ciphertext",
+      "inputs": [
+        "int"
+      ],
+      "output": "string",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "fetch_envelope_recipient",
+      "inputs": [
+        "int"
+      ],
+      "output": "string",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "fetch_envelope_msg_hash",
+      "inputs": [
+        "int"
+      ],
+      "output": "string",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "fetch_envelope_epoch",
+      "inputs": [
+        "int"
+      ],
+      "output": "int",
+      "view": true,
+      "payable": false
+    },
+    {
+      "name": "fetch_envelope_size_class",
+      "inputs": [
+        "int"
+      ],
+      "output": "int",
+      "view": true,
+      "payable": false
+    }
+  ],
+  "events": [
+    {
+      "name": "SealedEnvelopeSent",
+      "fields": [
+        {
+          "name": "msg_id",
+          "type": "int"
+        },
+        {
+          "name": "recipient_alias_hash",
+          "type": "string"
+        },
+        {
+          "name": "size_class",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "RootUpdated",
+      "fields": [
+        {
+          "name": "old_root",
+          "type": "string"
+        },
+        {
+          "name": "new_root",
+          "type": "string"
+        },
+        {
+          "name": "member_count",
+          "type": "int"
+        },
+        {
+          "name": "epoch_updated",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "FeeCollected",
+      "fields": [
+        {
+          "name": "amount",
+          "type": "int"
+        },
+        {
+          "name": "msg_id",
+          "type": "int"
+        },
+        {
+          "name": "epoch_collected",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "FeeUpdated",
+      "fields": [
+        {
+          "name": "old_fee",
+          "type": "int"
+        },
+        {
+          "name": "new_fee",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "TreasuryUpdated",
+      "fields": [
+        {
+          "name": "old_treasury",
+          "type": "address"
+        },
+        {
+          "name": "new_treasury",
+          "type": "address"
+        }
+      ]
+    },
+    {
+      "name": "OwnerTransferred",
+      "fields": [
+        {
+          "name": "old_owner",
+          "type": "address"
+        },
+        {
+          "name": "new_owner",
+          "type": "address"
+        }
+      ]
+    },
+    {
+      "name": "OwnerTransferInitiated",
+      "fields": [
+        {
+          "name": "current_owner",
+          "type": "address"
+        },
+        {
+          "name": "pending_owner",
+          "type": "address"
+        }
+      ]
+    },
+    {
+      "name": "OwnerTransferCancelled",
+      "fields": [
+        {
+          "name": "current_owner",
+          "type": "address"
+        },
+        {
+          "name": "cancelled_pending",
+          "type": "address"
+        }
+      ]
+    },
+    {
+      "name": "Swept",
+      "fields": [
+        {
+          "name": "to",
+          "type": "address"
+        },
+        {
+          "name": "amount",
+          "type": "int"
+        },
+        {
+          "name": "epoch_swept",
+          "type": "int"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,374 @@
+// mail_sealed.aml — 8mail Phase 2 Beta
+//
+// Sealed-sender envelope contract on Octra.
+// - No sender address stored on chain.
+// - Membership verified via keccak Merkle proof against a root maintained by
+//   the owner (beta trust concession; cryptographic membership update is
+//   deferred to Phase 3 once Octra AML exposes ZK verifier primitives).
+// - Nullifier set prevents replay.
+// - Recipient-scoped inbox keyed by alias hash (not address).
+//
+// Wire-format reality (verified May 2026, see spec §4 preamble):
+//   1. AML `bytes` and `string` are indistinguishable on the JSON-RPC wire.
+//      `len(x) == 32` on a wire-provided `bytes` arg counts CHARACTERS, not
+//      decoded bytes. This contract therefore treats every 32-byte
+//      identifier (merkle_root, leaf, nullifier, recipient_alias_hash,
+//      msg_hash, siblings in path_flat) as a 64-character lowercase hex
+//      string end-to-end. keccak256 is applied to the hex text, mirrored
+//      byte-for-byte on the client (`keccak256(hex.encode())` in Python).
+//   2. Init runs in `constructor(...)`, NOT `fn init(...)`. The compiler
+//      accepts `constructor` and the VM invokes it exactly once at deploy.
+//      Earlier drafts that used `fn init()` + `bootstrap()` have been
+//      abandoned (see spec §4 preamble and the octra-smart-contract-dev
+//      skill's Pitfall 7b).
+//   3. State access requires `self.` prefix.
+//   4. No struct-literal construction; assign fields one at a time.
+//   5. No `bool`; 0/1 int encodes truthiness.
+//
+// AML surface used: keccak256, concat, substr, len, maps (including nested),
+// require, emit, transfer, and the execution context identifiers
+// caller, origin, epoch, value. No bitwise ops (direction bits walked with
+// % 2 and / 2), no pairing, no ZK primitives.
+//
+// See wiki/8mail-phase2-beta-engineering-spec.md §4 for the full design,
+// §5 for the transaction byte layout, and §2.5.4 for the beta trust concession.
+
+contract mail_sealed {
+
+    struct SealedEnvelope {
+        recipient_alias_hash: string   // 64 hex chars = 32 raw bytes
+        ciphertext: string             // base64 of size-class-padded libsodium sealed_box
+        msg_hash: string               // 64 hex chars = keccak256(plaintext) for E2E integrity
+        epoch_sent: int
+        size_class: int
+    }
+
+    event SealedEnvelopeSent(msg_id: int, recipient_alias_hash: string, size_class: int)
+    event RootUpdated(old_root: string, new_root: string, member_count: int, epoch_updated: int)
+
+    // Revenue + governance events.
+    // See wiki/8mail-revenue-model.md §5, 8NS-dao-governance-summary.md §4.
+    event FeeCollected(amount: int, msg_id: int, epoch_collected: int)
+    event FeeUpdated(old_fee: int, new_fee: int)
+    event TreasuryUpdated(old_treasury: address, new_treasury: address)
+    event OwnerTransferred(old_owner: address, new_owner: address)
+    event OwnerTransferInitiated(current_owner: address, pending_owner: address)
+    event OwnerTransferCancelled(current_owner: address, cancelled_pending: address)
+    event Swept(to: address, amount: int, epoch_swept: int)
+
+    state {
+        owner: address
+        pending_owner: address          // two-step ownership transfer; "" means none pending
+        merkle_root: string             // 64 hex chars
+        member_count: int
+
+        // Auditable reconstruction of the current member set.
+        // Tradeoff: leaf hashes are visible on-chain; Phase 2 accepts this.
+        leaves: map[int]string          // 64 hex chars each
+
+        // nullifier (64 hex chars) -> epoch used (0 means unused, epoch always > 0)
+        nullifiers: map[string]int
+
+        next_msg_id: int
+
+        sealed_envelopes: map[int]SealedEnvelope
+
+        // Recipient-scoped inbox keyed by alias hash (hex string), not address.
+        inbox: map[string]map[int]int
+        inbox_count: map[string]int
+
+        // Revenue + transition state.
+        // Migration: founder wallet → 5-of-9 multisig → DAO timelock
+        // across phases via set_treasury() / set_owner() (owner-only).
+        // See 8NS-dao-governance-summary.md §4.
+        treasury: address
+        fee_per_send: int
+        pending_fees: int
+        total_fees_collected: int
+    }
+
+    // Deploy-time initializer. Runs exactly once with constructor args baked
+    // into the deploy tx (op_type="deploy", message=json.dumps([initial_root,
+    // initial_treasury, initial_fee])).
+    //
+    // Arguments:
+    //   initial_root:     64-char hex of the initial Merkle root (depth-10
+    //                     zero root for a fresh deploy, or resumed root
+    //                     from a snapshot).
+    //   initial_treasury: Phase 1 = deploy wallet. Migrated via set_treasury().
+    //   initial_fee:      0 for free-tier beta; 50_000 OU (0.05 OCT) when
+    //                     fees are enabled. See wiki/8mail-revenue-model.md §4.
+    //
+    // See pre-deploy-strategy-review checklist in the octra-smart-contract-dev
+    // skill before committing — Octra contracts are immutable, so this is the
+    // last point at which state shape and the transition surface can change.
+    constructor(initial_root: string, initial_treasury: address, initial_fee: int) {
+        require(len(initial_root) == 64, "root must be 64 hex chars")
+        require(initial_fee >= 0, "negative fee")
+
+        self.owner = origin
+        self.pending_owner = ""
+        self.merkle_root = initial_root
+        self.member_count = 0
+        self.next_msg_id = 0
+
+        self.treasury = initial_treasury
+        self.fee_per_send = initial_fee
+        self.pending_fees = 0
+        self.total_fees_collected = 0
+
+        emit OwnerTransferred(origin, origin)
+        emit TreasuryUpdated(initial_treasury, initial_treasury)
+        emit FeeUpdated(0, initial_fee)
+        emit RootUpdated(initial_root, initial_root, 0, epoch)
+    }
+
+    // Owner-only (beta trust concession, see spec §2.5.4).
+    // Rotates the registry root after adding or removing leaves off-chain.
+    fn update_root(new_root: string, new_member_count: int): int {
+        require(caller == self.owner, "owner only")
+        require(len(new_root) == 64, "root must be 64 hex chars")
+        let old_root = self.merkle_root
+        self.merkle_root = new_root
+        self.member_count = new_member_count
+        emit RootUpdated(old_root, new_root, new_member_count, epoch)
+        return 1
+    }
+
+    // Append a single leaf to the leaves map (for auditable reconstruction).
+    // Owner is responsible for computing the new root off-chain and calling
+    // update_root — leaves are informational; the root is the source of truth.
+    fn record_leaf(slot: int, leaf: string): int {
+        require(caller == self.owner, "owner only")
+        require(len(leaf) == 64, "leaf must be 64 hex chars")
+        self.leaves[slot] = leaf
+        return 1
+    }
+
+    // Sealed send. Permissionless at the contract level — membership is
+    // proven via Merkle path + nullifier, not authenticated by caller address.
+    //
+    // Params:
+    //   leaf                  64 hex chars = keccak(pubkey || salt)
+    //   path_flat             path_len * 64 hex chars, concatenated siblings
+    //   path_dirs             little-endian bitfield; bit i = 1 ⇒ sibling[i] on LEFT of acc
+    //   path_len              tree depth D (10 for beta, see spec §5.1)
+    //   nullifier             64 hex chars = keccak(sender_secret || msg_ctr || recipient_alias)
+    //   recipient_alias_hash  64 hex chars = keccak(recipient_pubkey || alias_salt)
+    //   ciphertext            base64, padded to size class (spec §5.4)
+    //   msg_hash              64 hex chars = keccak(plaintext)
+    //   size_class            256 | 1024 | 4096 (literal byte size, not an enum tag)
+    fn send_sealed(
+        leaf: string,
+        path_flat: string,
+        path_dirs: int,
+        path_len: int,
+        nullifier: string,
+        recipient_alias_hash: string,
+        ciphertext: string,
+        msg_hash: string,
+        size_class: int
+    ): int {
+        require(len(leaf) == 64, "leaf must be 64 hex chars")
+        require(len(nullifier) == 64, "nullifier must be 64 hex chars")
+        require(len(recipient_alias_hash) == 64, "recipient alias hash must be 64 hex chars")
+        require(len(msg_hash) == 64, "msg hash must be 64 hex chars")
+        require(len(path_flat) == path_len * 64, "path_flat length mismatch")
+        require(path_len >= 0, "negative path_len")
+        require(path_len <= 32, "path_len too large")
+        require(size_class == 256 || size_class == 1024 || size_class == 4096, "invalid size class")
+        require(self.nullifiers[nullifier] == 0, "nullifier already used")
+
+        // Fee enforcement — see wiki/8mail-revenue-model.md §4.
+        // Zero fee disables enforcement (free-tier beta). Non-zero requires
+        // `value >= self.fee_per_send` OU attached to the call. Excess `value`
+        // is NOT refunded; it accumulates and is swept to treasury.
+        require(value >= self.fee_per_send, "insufficient fee")
+
+        // Recompute the Merkle root from leaf + siblings + directions.
+        // Direction bits are walked with %2 and /2 since AML has no bitwise ops.
+        // Client-side verification in eightmail.sealed.merkle.verify_path MUST
+        // mirror this byte-for-byte (same pair order, same LSB-first bit order).
+        let acc = leaf
+        let i = 0
+        let dirs = path_dirs
+        while i < path_len {
+            let sib = substr(path_flat, i * 64, 64)
+            let d = dirs % 2
+            if d == 1 {
+                acc = keccak256(concat(sib, acc))
+            } else {
+                acc = keccak256(concat(acc, sib))
+            }
+            dirs = dirs / 2
+            i = i + 1
+        }
+        require(acc == self.merkle_root, "invalid membership proof")
+
+        // Mark nullifier at current epoch to prevent replay.
+        self.nullifiers[nullifier] = epoch
+
+        let msg_id = self.next_msg_id
+        self.next_msg_id = msg_id + 1
+
+        // No struct-literal syntax in AML — assign fields one at a time.
+        self.sealed_envelopes[msg_id].recipient_alias_hash = recipient_alias_hash
+        self.sealed_envelopes[msg_id].ciphertext = ciphertext
+        self.sealed_envelopes[msg_id].msg_hash = msg_hash
+        self.sealed_envelopes[msg_id].epoch_sent = epoch
+        self.sealed_envelopes[msg_id].size_class = size_class
+
+        // Nested-map assignment works without prior init of the inner map.
+        let idx = self.inbox_count[recipient_alias_hash]
+        self.inbox[recipient_alias_hash][idx] = msg_id
+        self.inbox_count[recipient_alias_hash] = idx + 1
+
+        // Fee accumulation (swept separately via sweep()).
+        self.pending_fees = self.pending_fees + value
+        self.total_fees_collected = self.total_fees_collected + value
+
+        emit SealedEnvelopeSent(msg_id, recipient_alias_hash, size_class)
+        emit FeeCollected(value, msg_id, epoch)
+        return msg_id
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Treasury + governance transition surface.
+    //
+    // These setters are the migration path for:
+    //   Phase 1: deploy wallet
+    //   Phase 2: 5-of-9 8NS community multisig
+    //   Phase 3: 8mail sub-DAO timelock
+    //
+    // Contracts on Octra are IMMUTABLE — these setters are the ONLY way
+    // to transfer control without a full redeploy. Their presence is a
+    // load-bearing prerequisite for decentralization. See
+    // 8NS-dao-governance-summary.md §4 and the pre-deploy-strategy-review
+    // checklist in the octra-smart-contract-dev skill.
+    // ─────────────────────────────────────────────────────────────────
+
+    // Two-step ownership transfer. Prevents typo-induced loss of admin control
+    // (see 8NS-dao-governance-summary.md §4). Step 1: current owner proposes a
+    // new_owner. Step 2: new_owner must call accept_ownership() from their own
+    // wallet. Only then does self.owner rotate. The current owner can cancel
+    // before step 2 completes.
+    //
+    // A single-step set_owner() was considered and rejected — an irreversible
+    // typo in a cold-wallet address would orphan the contract's admin surface.
+    // Sweeps would still work (permissionless, destination bound to treasury),
+    // but set_fee / set_treasury / initiate_owner_transfer would be unreachable.
+    fn initiate_owner_transfer(new_owner: address): int {
+        require(caller == self.owner, "owner only")
+        self.pending_owner = new_owner
+        emit OwnerTransferInitiated(self.owner, new_owner)
+        return 1
+    }
+
+    fn accept_ownership(): int {
+        require(caller == self.pending_owner, "not pending owner")
+        let old_owner = self.owner
+        self.owner = self.pending_owner
+        self.pending_owner = ""
+        emit OwnerTransferred(old_owner, self.owner)
+        return 1
+    }
+
+    fn cancel_owner_transfer(): int {
+        require(caller == self.owner, "owner only")
+        let cancelled = self.pending_owner
+        self.pending_owner = ""
+        emit OwnerTransferCancelled(self.owner, cancelled)
+        return 1
+    }
+
+    fn set_treasury(new_treasury: address): int {
+        require(caller == self.owner, "owner only")
+        let old_treasury = self.treasury
+        self.treasury = new_treasury
+        emit TreasuryUpdated(old_treasury, new_treasury)
+        return 1
+    }
+
+    fn set_fee(new_fee: int): int {
+        require(caller == self.owner, "owner only")
+        require(new_fee >= 0, "negative fee")
+        let old_fee = self.fee_per_send
+        self.fee_per_send = new_fee
+        emit FeeUpdated(old_fee, new_fee)
+        return 1
+    }
+
+    // Permissionless sweep — funds always go to the current treasury.
+    // Anyone can trigger so sweeps can't be censored by an inactive owner;
+    // the destination can only ever be the declared treasury address.
+    fn sweep(): int {
+        require(self.pending_fees > 0, "nothing to sweep")
+        let amount = self.pending_fees
+        self.pending_fees = 0
+        transfer(self.treasury, amount)
+        emit Swept(self.treasury, amount, epoch)
+        return amount
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // View functions (read-only, free).
+    // ─────────────────────────────────────────────────────────────────
+
+    view fn current_root(): string           { return self.merkle_root }
+    view fn current_member_count(): int      { return self.member_count }
+    view fn get_next_msg_id(): int           { return self.next_msg_id }
+    view fn get_owner(): address             { return self.owner }
+    view fn get_pending_owner(): address     { return self.pending_owner }
+    view fn get_treasury(): address          { return self.treasury }
+    view fn get_fee_per_send(): int          { return self.fee_per_send }
+    view fn get_pending_fees(): int          { return self.pending_fees }
+    view fn get_total_fees_collected(): int  { return self.total_fees_collected }
+
+    view fn has_nullifier(nullifier: string): int {
+        return self.nullifiers[nullifier]
+    }
+
+    view fn get_leaf(slot: int): string {
+        return self.leaves[slot]
+    }
+
+    view fn get_inbox_count(recipient_alias_hash: string): int {
+        return self.inbox_count[recipient_alias_hash]
+    }
+
+    view fn get_inbox_msg_id(recipient_alias_hash: string, index: int): int {
+        require(index >= 0, "invalid index")
+        require(index < self.inbox_count[recipient_alias_hash], "index out of range")
+        return self.inbox[recipient_alias_hash][index]
+    }
+
+    view fn fetch_envelope_ciphertext(msg_id: int): string {
+        require(msg_id >= 0, "invalid msg_id")
+        require(msg_id < self.next_msg_id, "message not found")
+        return self.sealed_envelopes[msg_id].ciphertext
+    }
+
+    view fn fetch_envelope_recipient(msg_id: int): string {
+        require(msg_id >= 0, "invalid msg_id")
+        require(msg_id < self.next_msg_id, "message not found")
+        return self.sealed_envelopes[msg_id].recipient_alias_hash
+    }
+
+    view fn fetch_envelope_msg_hash(msg_id: int): string {
+        require(msg_id >= 0, "invalid msg_id")
+        require(msg_id < self.next_msg_id, "message not found")
+        return self.sealed_envelopes[msg_id].msg_hash
+    }
+
+    view fn fetch_envelope_epoch(msg_id: int): int {
+        require(msg_id >= 0, "invalid msg_id")
+        require(msg_id < self.next_msg_id, "message not found")
+        return self.sealed_envelopes[msg_id].epoch_sent
+    }
+
+    view fn fetch_envelope_size_class(msg_id: int): int {
+        require(msg_id >= 0, "invalid msg_id")
+        require(msg_id < self.next_msg_id, "message not found")
+        return self.sealed_envelopes[msg_id].size_class
+    }
+}
